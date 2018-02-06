@@ -39,8 +39,6 @@ mixin template GenerateFieldAccessorMethods()
 
     static enum GenerateFieldAccessorMethodsImpl()
     {
-        import std.traits : hasUDA;
-
         string result = "";
 
         foreach (name; Filter!(isNotThis, __traits(derivedMembers, typeof(this))))
@@ -156,15 +154,31 @@ template GenerateReader(string name, alias field)
                         ~ "{ return typeof(this.%s).init ~ this.%s; }",
                           visibility, getModifiers!field, accessorName, attributesString, name, name);
         }
-        else static if (isStatic!field)
-        {
-            return format("%s static final @property auto %s() %s{ return this.%s; }",
-                visibility, accessorName, attributesString, name);
-        }
         else
         {
-            return format("%s final @property auto %s() inout %s{ return this.%s; }",
-                visibility, accessorName, attributesString, name);
+            string returnStmt;
+
+            static if (mayGainfullyStripConst!(typeof(field)))
+            {
+                returnStmt = format(
+                    "import std.traits : Unqual; Unqual!(typeof(this.%s)) constless = this.%s; return constless;",
+                    name, name);
+            }
+            else
+            {
+                 returnStmt = format("return this.%s;", name);
+            }
+
+            static if (isStatic!field)
+            {
+                return format("%s static final @property auto %s() %s{ %s }",
+                    visibility, accessorName, attributesString, returnStmt);
+            }
+            else
+            {
+                return format("%s final @property auto %s() inout %s{ %s }",
+                    visibility, accessorName, attributesString, returnStmt);
+            }
         }
     }
 }
@@ -175,6 +189,7 @@ template GenerateReader(string name, alias field)
     int integerValue;
     string stringValue;
     int[] intArrayValue;
+    const string constStringValue;
 
     static assert(GenerateReader!("foo", integerValue) ==
         "public static final @property auto foo() " ~
@@ -185,6 +200,10 @@ template GenerateReader(string name, alias field)
     static assert(GenerateReader!("foo", intArrayValue) ==
         "public static final @property auto foo() inout nothrow @safe "
       ~ "{ return typeof(this.foo).init ~ this.foo; }");
+    static assert(GenerateReader!("foo", constStringValue) ==
+        "public static final @property auto foo() @nogc nothrow @safe { " ~
+            "import std.traits : Unqual; " ~
+            "Unqual!(typeof(this.foo)) constless = this.foo; return constless; }");
 }
 
 template GenerateRefReader(string name, alias field)
@@ -244,10 +263,46 @@ template GenerateConstReader(string name, alias field)
 
         alias attributes = inferAttributes!(typeof(field), "__postblit");
         string attributesString = generateAttributeString!attributes;
+        string returnStmt;
 
-        return format("%s final @property auto %s() const %s { return this.%s; }",
-            visibility, accessorName, attributesString, name);
+        static if (mayGainfullyStripConst!(ConstOf!(typeof(field))))
+        {
+            returnStmt = format(
+                "import std.traits : Unqual; Unqual!(typeof(this.%s)) constless = this.%s; return constless;",
+                name, name);
+        }
+        else
+        {
+                returnStmt = format("return this.%s;", name);
+        }
+
+        return format("%s final @property auto %s() const %s{ %s }",
+            visibility, accessorName, attributesString, returnStmt);
     }
+}
+
+///
+@nogc nothrow pure @safe unittest
+{
+    int integerValue;
+    string stringValue;
+    const int[] constIntArrayValue;
+
+    static assert(GenerateConstReader!("foo", integerValue) ==
+        "public final @property auto foo() const " ~
+        "@nogc nothrow pure @safe { " ~
+            "import std.traits : Unqual; " ~
+            "Unqual!(typeof(this.foo)) constless = this.foo; return constless; }");
+    static assert(GenerateConstReader!("foo", stringValue) ==
+        "public final @property auto foo() const " ~
+        "@nogc nothrow pure @safe { " ~
+            "import std.traits : Unqual; " ~
+            "Unqual!(typeof(this.foo)) constless = this.foo; return constless; }");
+    static assert(GenerateConstReader!("foo", constIntArrayValue) ==
+        "public final @property auto foo() const " ~
+        "@nogc nothrow pure @safe { " ~
+            "import std.traits : Unqual; " ~
+            "Unqual!(typeof(this.foo)) constless = this.foo; return constless; }");
 }
 
 template GenerateWriter(string name, alias field, string fieldCode)
@@ -387,6 +442,17 @@ private template generateAttributeString(uint attributes)
 
         return attributesString;
     }
+}
+
+private enum mayGainfullyStripConst(T) = !is(T == Unqual!T) && isAssignable!(Unqual!T, T);
+
+@nogc nothrow pure @safe unittest
+{
+    static assert(!mayGainfullyStripConst!int);
+    static assert(mayGainfullyStripConst!(const int));
+    static assert(!mayGainfullyStripConst!(int[]));
+    static assert(!mayGainfullyStripConst!string);
+    static assert(mayGainfullyStripConst!(const string));
 }
 
 private enum needToDup(T) = isArray!T && !DeepConst!T;
