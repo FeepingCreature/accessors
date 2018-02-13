@@ -156,28 +156,28 @@ template GenerateReader(string name, alias field)
         }
         else
         {
-            string returnStmt;
+            string accessorBody;
 
-            static if (mayGainfullyStripConst!(typeof(field)))
+            static if (shouldStripConst!(typeof(field)))
             {
-                returnStmt = format(
+                accessorBody = format(
                     "import std.traits : Unqual; Unqual!(typeof(this.%s)) constless = this.%s; return constless;",
                     name, name);
             }
             else
             {
-                 returnStmt = format("return this.%s;", name);
+                 accessorBody = format("return this.%s;", name);
             }
 
             static if (isStatic!field)
             {
                 return format("%s static final @property auto %s() %s{ %s }",
-                    visibility, accessorName, attributesString, returnStmt);
+                    visibility, accessorName, attributesString, accessorBody);
             }
             else
             {
                 return format("%s final @property auto %s() inout %s{ %s }",
-                    visibility, accessorName, attributesString, returnStmt);
+                    visibility, accessorName, attributesString, accessorBody);
             }
         }
     }
@@ -265,7 +265,7 @@ template GenerateConstReader(string name, alias field)
         string attributesString = generateAttributeString!attributes;
         string returnStmt;
 
-        static if (mayGainfullyStripConst!(ConstOf!(typeof(field))))
+        static if (shouldStripConst!(ConstOf!(typeof(field))))
         {
             returnStmt = format(
                 "import std.traits : Unqual; Unqual!(typeof(this.%s)) constless = this.%s; return constless;",
@@ -444,15 +444,30 @@ private template generateAttributeString(uint attributes)
     }
 }
 
-private enum mayGainfullyStripConst(T) = !is(T == Unqual!T) && isAssignable!(Unqual!T, T);
+/**
+ * When a type does not need the const protections on it, we should remove them to avoid
+ * imposing unnecessary restrictions on our callers.
+ */
+private enum shouldStripConst(T) = !is(T == Unqual!T) && constCoversOnlyImmediateValues!T;
+
+/**
+ * For example:
+ * The type "string" is a struct containing a length value and an immutable pointer to char.
+ * The type `const string` is semantically valid. However, the const qualifier only protects
+ * the length value and pointer value, since the *target* of the pointer is already protected
+ * by `immutable`.
+ * As such, when copying a const string *value*, the const may be safely stripped without
+ * relaxing const protections.
+ */
+private enum constCoversOnlyImmediateValues(T) = isAssignable!(Unqual!T, T);
 
 @nogc nothrow pure @safe unittest
 {
-    static assert(!mayGainfullyStripConst!int);
-    static assert(mayGainfullyStripConst!(const int));
-    static assert(!mayGainfullyStripConst!(int[]));
-    static assert(!mayGainfullyStripConst!string);
-    static assert(mayGainfullyStripConst!(const string));
+    static assert(!shouldStripConst!int);
+    static assert(shouldStripConst!(const int));
+    static assert(!shouldStripConst!(int[]));
+    static assert(!shouldStripConst!string);
+    static assert(shouldStripConst!(const string));
 }
 
 private enum needToDup(T) = isArray!T && !DeepConst!T;
